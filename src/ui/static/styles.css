@@ -183,23 +183,135 @@ body {
     padding: 0 16px 16px 16px;
 }
 
+.saved-connections-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 10px;
+}
+
+.connection-group {
+    margin-bottom: 12px;
+}
+
+.bookmark-group-node {
+    margin-bottom: 2px;
+}
+
+.bookmark-group-header {
+    margin: 0;
+    padding-top: 6px;
+    padding-bottom: 6px;
+    border-radius: 6px;
+}
+
+.bookmark-caret {
+    width: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #9aa4b2;
+    font-size: 11px;
+    transition: transform 0.15s ease;
+}
+
+.bookmark-caret.open {
+    transform: rotate(0deg);
+}
+
+.bookmark-item {
+    margin-bottom: 4px;
+}
+
+.connection-group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 10px 0 6px 0;
+    padding: 0 2px;
+    color: #888;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.connection-group-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+}
+
+.connection-group-count {
+    min-width: 18px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: rgba(0, 212, 255, 0.12);
+    color: #00d4ff;
+    text-align: center;
+    font-size: 10px;
+}
+
+.connection-group-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.connection-group-header:hover .connection-group-actions {
+    opacity: 1;
+}
+
+.group-action-btn {
+    padding: 2px 6px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+    color: #ccc;
+    font-size: 10px;
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
+.group-action-btn:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+}
+
+.group-action-btn.delete {
+    color: #ff6b6b;
+    border-color: rgba(255, 107, 107, 0.25);
+}
+
+.saved-connection-main {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+}
+
+.saved-connection-text {
+    flex: 1;
+    min-width: 0;
+}
+
 .saved-connection-item {
     padding: 10px 12px;
     background: rgba(255, 255, 255, 0.05);
     border-radius: 6px;
     margin-bottom: 8px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    cursor: default;
+    transition: background 0.2s ease;
     font-size: 13px;
 }
 
 .saved-connection-item:hover {
     background: rgba(255, 255, 255, 0.08);
-    transform: translateX(2px);
 }
 
 .saved-connection-info {
@@ -208,31 +320,101 @@ body {
 }
 
 .saved-connection-name {
-    font-weight: 500;
-    margin-bottom: 2px;
+    font-weight: 600;
+    margin-bottom: 4px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    color: #e8eaed;
+    font-size: 13px;
+    line-height: 1.3;
 }
 
 .saved-connection-details {
     font-size: 11px;
-    color: #666;
+    color: #9aa4b2;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
 .saved-connection-actions {
-    display: flex;
-    gap: 4px;
-    opacity: 0;
-    transition: opacity 0.2s ease;
-    flex-shrink: 0;
+    display: none;
 }
 
 .saved-connection-item:hover .saved-connection-actions {
-    opacity: 1;
+    opacity: 0;
+}
+
+.bookmark-gear-wrap {
+    position: relative;
+    flex-shrink: 0;
+}
+
+.bookmark-gear-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 6px;
+    margin-top: -2px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #9aa4b2;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.bookmark-gear-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #00d4ff;
+}
+
+.bookmark-dropdown {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    min-width: 176px;
+    padding: 4px 0;
+    margin: 0;
+    background: linear-gradient(180deg, #2a3140 0%, #222831 100%);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    z-index: 6000;
+}
+
+.bookmark-dropdown.open {
+    display: block;
+}
+
+.bookmark-menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 8px 14px;
+    margin: 0;
+    border: none;
+    background: none;
+    color: #e8eaed;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+
+.bookmark-menu-item:hover {
+    background: rgba(0, 212, 255, 0.12);
+}
+
+.bookmark-menu-danger {
+    color: #ff9090;
+}
+
+.bookmark-menu-danger:hover {
+    background: rgba(255, 107, 107, 0.15);
 }
 
 .action-btn {

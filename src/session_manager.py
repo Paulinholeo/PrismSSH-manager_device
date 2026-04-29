@@ -1,6 +1,6 @@
 """Session management for PrismSSH."""
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 # Handle imports - try relative first, then absolute
 try:
@@ -44,24 +44,28 @@ class SSHSessionManager:
         self.logger.info(f"Created session {session_id}")
         return session_id
     
-    def connect_session(self, session_id: str, connection_params: Dict[str, Any]) -> bool:
-        """Connect a session with given parameters."""
+    def connect_session(self, session_id: str, connection_params: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Connect a session with given parameters. Returns (success, error_message)."""
         if session_id not in self.sessions:
             self.logger.error(f"Session {session_id} not found")
-            return False
-        
+            return False, "Sessão não encontrada (ID inválido). Reinicie e tente de novo."
+
+        raw_port = connection_params.get('port')
+        port = raw_port if raw_port not in (None, '', False) else self.config.default_port
+
         session = self.sessions[session_id]
         try:
-            return session.connect(
+            session.connect(
                 connection_params['hostname'],
-                connection_params.get('port', self.config.default_port),
+                port,
                 connection_params['username'],
                 connection_params.get('password'),
                 connection_params.get('keyPath')
             )
+            return True, None
         except Exception as e:
             self.logger.error(f"Failed to connect session {session_id}: {e}")
-            return False
+            return False, str(e)
     
     def send_input(self, session_id: str, data: str) -> bool:
         """Send input to a session."""

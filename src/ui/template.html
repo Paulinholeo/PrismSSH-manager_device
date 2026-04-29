@@ -45,6 +45,16 @@
                                 <label>Username</label>
                                 <input type="text" id="username" placeholder="root" />
                             </div>
+
+                            <div class="form-group">
+                                <label>Device Name</label>
+                                <input type="text" id="deviceName" placeholder="Server Production" />
+                            </div>
+
+                            <div class="form-group">
+                                <label>Group</label>
+                                <input type="text" id="connectionGroup" placeholder="DER_MG/Servidor_UOP" />
+                            </div>
                             
                             <div class="form-group">
                                 <label>Authentication</label>
@@ -79,13 +89,16 @@
                 <!-- Saved Connections Section -->
                 <div class="collapsible-section">
                     <div class="section-header" onclick="toggleSection('savedConnections')">
-                        <span class="section-title">Saved Connections</span>
+                        <span class="section-title">Bookmarks</span>
                         <svg class="section-chevron open" id="savedConnectionsChevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M6 9l6 6 6-6"/>
                         </svg>
                     </div>
                     <div class="section-content open" id="savedConnectionsContent">
                         <div class="saved-connections">
+                            <div class="saved-connections-toolbar">
+                                <button class="action-btn" onclick="createConnectionGroup()">New Group</button>
+                            </div>
                             <div id="savedConnectionsList"></div>
                         </div>
                     </div>

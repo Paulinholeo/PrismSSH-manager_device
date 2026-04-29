@@ -111,34 +111,54 @@ class ConnectionStore:
         except Exception as e:
             self.logger.error(f"Error setting up encryption: {e}")
             raise EncryptionError(f"Failed to setup encryption: {e}")
+
+    def _prepare_connection_for_storage(self, connection: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a copy that is safe to write to disk."""
+        stored_connection = dict(connection)
+
+        if self.cipher and stored_connection.get('password'):
+            try:
+                stored_connection['password'] = self.cipher.encrypt(
+                    stored_connection['password'].encode()
+                ).decode()
+                stored_connection['password_encrypted'] = True
+            except Exception as e:
+                self.logger.error(f"Error encrypting password: {e}")
+                stored_connection['password_encrypted'] = False
+
+        return stored_connection
+
+    def _write_connections(self, connections: Dict[str, Any]) -> None:
+        """Persist connections, encrypting sensitive fields when possible."""
+        self._ensure_config_dir()
+        safe_connections = {
+            key: self._prepare_connection_for_storage(connection)
+            for key, connection in connections.items()
+        }
+
+        with open(self.config.connections_file, 'w') as f:
+            json.dump(safe_connections, f, indent=2)
+
+    def _normalize_group_name(self, name: str) -> str:
+        """Normalize group names for stable storage and UI matching."""
+        return (name or '').strip()
     
     def save_connection(self, connection: Dict[str, Any]) -> bool:
         """Save a connection profile."""
         try:
             connections = self.load_connections()
-            
-            # Encrypt password if encryption is available and password exists
-            if self.cipher and connection.get('password'):
-                try:
-                    connection['password'] = self.cipher.encrypt(
-                        connection['password'].encode()
-                    ).decode()
-                    connection['password_encrypted'] = True
-                except Exception as e:
-                    self.logger.error(f"Error encrypting password: {e}")
-                    # Store in plain text if encryption fails
-                    connection['password_encrypted'] = False
-            
+
             # Use hostname@username as key
             key = f"{connection['hostname']}@{connection['username']}"
-            connections[key] = connection
-            
-            # Ensure directory exists before writing
-            self._ensure_config_dir()
-            
-            with open(self.config.connections_file, 'w') as f:
-                json.dump(connections, f, indent=2)
-                
+            existing = connections.get(key, {})
+            connections[key] = {
+                **existing,
+                **connection,
+                'group': connection.get('group', existing.get('group', ''))
+            }
+
+            self._write_connections(connections)
+
             self.logger.info(f"Connection saved: {key}")
             return True
             
@@ -186,8 +206,7 @@ class ConnectionStore:
             connections = self.load_connections()
             if key in connections:
                 del connections[key]
-                with open(self.config.connections_file, 'w') as f:
-                    json.dump(connections, f, indent=2)
+                self._write_connections(connections)
                 self.logger.info(f"Connection deleted: {key}")
                 return True
             else:
@@ -201,3 +220,177 @@ class ConnectionStore:
         """Get a specific connection by key."""
         connections = self.load_connections()
         return connections.get(key)
+
+    def rename_connection(self, key: str, new_name: str) -> bool:
+        """Rename a saved connection display name without changing SSH settings."""
+        try:
+            normalized_name = (new_name or '').strip()
+            if not normalized_name:
+                self.logger.warning("Cannot rename connection to an empty name")
+                return False
+
+            connections = self.load_connections()
+            if key not in connections:
+                self.logger.warning(f"Connection not found: {key}")
+                return False
+
+            connections[key]['name'] = normalized_name
+            self._write_connections(connections)
+            self.logger.info(f"Connection renamed: {key} -> {normalized_name}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error renaming connection {key}: {e}")
+            return False
+
+    def update_connection_group(self, key: str, group_name: str) -> bool:
+        """Assign a saved connection to a group or clear its group."""
+        try:
+            normalized_group = self._normalize_group_name(group_name)
+            connections = self.load_connections()
+            if key not in connections:
+                self.logger.warning(f"Connection not found: {key}")
+                return False
+
+            if normalized_group:
+                self.save_group(normalized_group)
+
+            connections[key]['group'] = normalized_group
+            self._write_connections(connections)
+            self.logger.info(f"Connection group updated: {key} -> {normalized_group or 'Ungrouped'}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error updating group for {key}: {e}")
+            return False
+
+    def load_groups(self) -> list[str]:
+        """Load saved host groups."""
+        if not Path(self.config.connection_groups_file).exists():
+            return []
+
+        try:
+            with open(self.config.connection_groups_file, 'r') as f:
+                data = json.load(f)
+
+            if isinstance(data, list):
+                groups = data
+            else:
+                groups = data.get('groups', [])
+
+            normalized_groups = []
+            seen = set()
+            for group in groups:
+                normalized = self._normalize_group_name(str(group))
+                key = normalized.lower()
+                if normalized and key not in seen:
+                    normalized_groups.append(normalized)
+                    seen.add(key)
+
+            return normalized_groups
+        except Exception as e:
+            self.logger.error(f"Error loading groups: {e}")
+            return []
+
+    def _write_groups(self, groups: list[str]) -> None:
+        """Persist host groups in a stable shape."""
+        self._ensure_config_dir()
+        normalized_groups = sorted(
+            {self._normalize_group_name(group) for group in groups if self._normalize_group_name(group)},
+            key=str.lower
+        )
+        with open(self.config.connection_groups_file, 'w') as f:
+            json.dump({'groups': normalized_groups}, f, indent=2)
+
+    def save_group(self, group_name: str) -> bool:
+        """Create a host group if it does not exist."""
+        try:
+            normalized_group = self._normalize_group_name(group_name)
+            if not normalized_group:
+                return False
+
+            groups = self.load_groups()
+            if normalized_group.lower() not in {group.lower() for group in groups}:
+                groups.append(normalized_group)
+                self._write_groups(groups)
+                self.logger.info(f"Group saved: {normalized_group}")
+
+            return True
+        except Exception as e:
+            self.logger.error(f"Error saving group {group_name}: {e}")
+            return False
+
+    def rename_group(self, old_name: str, new_name: str) -> bool:
+        """Rename a group path (including its subgroups) and update assigned connections."""
+        try:
+            old_group = self._normalize_group_name(old_name)
+            new_group = self._normalize_group_name(new_name)
+            if not old_group or not new_group:
+                return False
+
+            groups = self.load_groups()
+            if old_group.lower() not in {group.lower() for group in groups}:
+                return False
+
+            old_group_lower = old_group.lower()
+            updated_groups = []
+            for group in groups:
+                normalized_group = self._normalize_group_name(group)
+                normalized_group_lower = normalized_group.lower()
+                if normalized_group_lower == old_group_lower:
+                    updated_groups.append(new_group)
+                elif normalized_group_lower.startswith(old_group_lower + '/'):
+                    suffix = normalized_group[len(old_group):]
+                    updated_groups.append(f"{new_group}{suffix}")
+                else:
+                    updated_groups.append(normalized_group)
+            self._write_groups(updated_groups)
+
+            connections = self.load_connections()
+            for connection in connections.values():
+                connection_group = self._normalize_group_name(connection.get('group', ''))
+                connection_group_lower = connection_group.lower()
+                if connection_group_lower == old_group_lower:
+                    connection['group'] = new_group
+                elif connection_group_lower.startswith(old_group_lower + '/'):
+                    suffix = connection_group[len(old_group):]
+                    connection['group'] = f"{new_group}{suffix}"
+            self._write_connections(connections)
+
+            self.logger.info(f"Group renamed: {old_group} -> {new_group}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error renaming group {old_name}: {e}")
+            return False
+
+    def delete_group(self, group_name: str) -> bool:
+        """Delete a group path (including subgroups) and move its connections to Ungrouped."""
+        try:
+            normalized_group = self._normalize_group_name(group_name)
+            if not normalized_group:
+                return False
+
+            normalized_group_lower = normalized_group.lower()
+            groups = [
+                group for group in self.load_groups()
+                if not (
+                    group.lower() == normalized_group_lower
+                    or group.lower().startswith(normalized_group_lower + '/')
+                )
+            ]
+            self._write_groups(groups)
+
+            connections = self.load_connections()
+            for connection in connections.values():
+                connection_group = self._normalize_group_name(connection.get('group', ''))
+                connection_group_lower = connection_group.lower()
+                if (
+                    connection_group_lower == normalized_group_lower
+                    or connection_group_lower.startswith(normalized_group_lower + '/')
+                ):
+                    connection['group'] = ''
+            self._write_connections(connections)
+
+            self.logger.info(f"Group deleted: {normalized_group}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error deleting group {group_name}: {e}")
+            return False

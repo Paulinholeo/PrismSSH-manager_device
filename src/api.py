@@ -85,27 +85,34 @@ class PrismSSHAPI:
             
             # Save connection if requested
             if params.get('save', False):
+                raw_port = params.get('port')
+                resolved_port = raw_port if raw_port not in (None, '') else self.config.default_port
                 save_data = {
                     'hostname': params['hostname'],
-                    'port': params.get('port', self.config.default_port),
+                    'port': resolved_port,
                     'username': params['username'],
                     'password': params.get('password'),
                     'keyPath': params.get('keyPath'),
-                    'name': params.get('name', f"{params['username']}@{params['hostname']}")
+                    'name': params.get('name', f"{params['username']}@{params['hostname']}"),
+                    'group': params.get('group', '')
                 }
                 
                 save_result = self.connection_store.save_connection(save_data)
                 if not save_result:
                     self.logger.warning("Failed to save connection")
             
-            success = self.session_manager.connect_session(session_id, params)
+            raw_port = params.get('port')
+            if raw_port in (None, ''):
+                params = {**params, 'port': self.config.default_port}
+            
+            success, connect_error = self.session_manager.connect_session(session_id, params)
             
             result = {'success': success}
             if success:
                 self.logger.info(f"API: Session {session_id} connected successfully")
             else:
-                self.logger.error(f"API: Session {session_id} connection failed")
-                result['error'] = 'Connection failed'
+                self.logger.error(f"API: Session {session_id} connection failed: {connect_error}")
+                result['error'] = connect_error or 'Falha na conexão'
             
             return json.dumps(result)
             
@@ -140,6 +147,62 @@ class PrismSSHAPI:
             return json.dumps({'success': success})
         except Exception as e:
             self.logger.error(f"API: Error deleting connection {key}: {e}")
+            return json.dumps({'success': False, 'error': str(e)})
+
+    def rename_saved_connection(self, key: str, new_name: str) -> str:
+        """Rename a saved connection display name."""
+        try:
+            success = self.connection_store.rename_connection(key, new_name)
+            self.logger.info(f"API: Renamed connection {key}: {success}")
+            return json.dumps({'success': success})
+        except Exception as e:
+            self.logger.error(f"API: Error renaming connection {key}: {e}")
+            return json.dumps({'success': False, 'error': str(e)})
+
+    def update_saved_connection_group(self, key: str, group_name: str) -> str:
+        """Assign a saved connection to a host group."""
+        try:
+            success = self.connection_store.update_connection_group(key, group_name)
+            self.logger.info(f"API: Updated connection group {key}: {success}")
+            return json.dumps({'success': success})
+        except Exception as e:
+            self.logger.error(f"API: Error updating group for connection {key}: {e}")
+            return json.dumps({'success': False, 'error': str(e)})
+
+    def get_connection_groups(self) -> str:
+        """Get all saved connection groups."""
+        try:
+            groups = self.connection_store.load_groups()
+            return json.dumps(groups)
+        except Exception as e:
+            self.logger.error(f"API: Error loading connection groups: {e}")
+            return json.dumps([])
+
+    def create_connection_group(self, group_name: str) -> str:
+        """Create a saved connection group."""
+        try:
+            success = self.connection_store.save_group(group_name)
+            return json.dumps({'success': success})
+        except Exception as e:
+            self.logger.error(f"API: Error creating connection group {group_name}: {e}")
+            return json.dumps({'success': False, 'error': str(e)})
+
+    def rename_connection_group(self, old_name: str, new_name: str) -> str:
+        """Rename a saved connection group."""
+        try:
+            success = self.connection_store.rename_group(old_name, new_name)
+            return json.dumps({'success': success})
+        except Exception as e:
+            self.logger.error(f"API: Error renaming connection group {old_name}: {e}")
+            return json.dumps({'success': False, 'error': str(e)})
+
+    def delete_connection_group(self, group_name: str) -> str:
+        """Delete a saved connection group and ungroup its hosts."""
+        try:
+            success = self.connection_store.delete_group(group_name)
+            return json.dumps({'success': success})
+        except Exception as e:
+            self.logger.error(f"API: Error deleting connection group {group_name}: {e}")
             return json.dumps({'success': False, 'error': str(e)})
     
     def send_input(self, session_id: str, data: str) -> str:
@@ -1148,29 +1211,37 @@ class PrismSSHAPI:
 
         self.logger.info(f"Host key verification required for {hostname} ({key_type}): {fingerprint}")
 
-        # Notify the JS frontend to show the modal
-        if self._window:
-            try:
-                self._window.evaluate_js(f'''
-                    (function() {{
-                        if (typeof showHostKeyVerificationModal === 'function') {{
-                            showHostKeyVerificationModal({{
-                                hostname: "{hostname}",
-                                key_type: "{key_type}",
-                                fingerprint: "{fingerprint}",
-                                verification_id: "{verification_id}"
-                            }}).then(function(accepted) {{
-                                window.pywebview.api.verify_host_key("{verification_id}", accepted);
-                            }});
-                        }} else {{
-                            console.error('showHostKeyVerificationModal function not found');
-                            window.pywebview.api.verify_host_key("{verification_id}", true);
-                        }}
-                    }})();
-                ''')
-            except Exception as e:
-                self.logger.error(f"Failed to show host key modal: {e}")
-                return True  # Auto-accept if modal fails
+        if not self._window:
+            self.logger.warning(
+                "Sem janela webview para diálogo de host key — aceitando chave automaticamente "
+                "(evita timeout; use apenas quando apropriado)."
+            )
+            return True
+
+        # Notify the JS frontend to show the modal (JSON-safe embedding)
+        details_json = json.dumps({
+            'hostname': hostname,
+            'key_type': key_type,
+            'fingerprint': fingerprint,
+            'verification_id': verification_id,
+        })
+        try:
+            self._window.evaluate_js(f'''
+                (function() {{
+                    var details = {details_json};
+                    if (typeof showHostKeyVerificationModal === 'function') {{
+                        showHostKeyVerificationModal(details).then(function(accepted) {{
+                            window.pywebview.api.verify_host_key(details.verification_id, accepted);
+                        }});
+                    }} else {{
+                        console.error('showHostKeyVerificationModal function not found');
+                        window.pywebview.api.verify_host_key(details.verification_id, true);
+                    }}
+                }})();
+            ''')
+        except Exception as e:
+            self.logger.error(f"Failed to show host key modal: {e}")
+            return True  # Auto-accept if modal fails
 
         # Wait for user verification (with timeout)
         timeout = 120  # 2 minutes timeout

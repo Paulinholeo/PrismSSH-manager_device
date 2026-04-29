@@ -79,9 +79,15 @@ class SSHSession:
                     return True
                 else:
                     self.logger.error(f"Failed to open shell for session {self.id}")
+                    raise SessionError(
+                        "Não foi possível abrir o shell remoto (SSH conectou, mas o servidor "
+                        "não abriu PTY/shell)."
+                    )
             
-            return False
+            raise SessionError("Falha inesperada na conexão SSH (retorno vazio do cliente).")
             
+        except SessionError:
+            raise
         except Exception as e:
             self.logger.error(f"Session {self.id} connection failed: {e}")
             raise SessionError(f"Failed to connect session: {str(e)}")

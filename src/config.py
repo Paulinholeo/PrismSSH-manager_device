@@ -14,6 +14,7 @@ class Config:
         self._config_dir = Path.home() / f".{self.app_name}"
         self.config_dir = str(self._config_dir)
         self.connections_file = str(self._config_dir / "connections.json")
+        self.connection_groups_file = str(self._config_dir / "connection_groups.json")
         self.key_file = str(self._config_dir / ".key")
         self.log_file = str(self._config_dir / "prismssh.log")
         

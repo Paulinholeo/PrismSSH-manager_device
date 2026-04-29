@@ -6,6 +6,107 @@ let fitAddon = null;
 let currentTool = null;
 let currentPath = '/';
 let isLoadingFiles = false;
+let savedConnectionGroups = [];
+let expandedBookmarkNodes = new Set();
+let bookmarkDropdownSeq = 0;
+
+/** Rótulo exibido na árvore de bookmarks (Device Name salvos no perfil). */
+function getBookmarkDisplayName(conn) {
+    if (!conn) return '';
+    const raw = conn.name != null ? String(conn.name).trim() : '';
+    if (raw) return raw;
+    if (conn.username != null && conn.hostname != null) {
+        return `${conn.username}@${conn.hostname}`;
+    }
+    return (conn.key && String(conn.key)) || 'Conexão';
+}
+
+function closeBookmarkOptionMenus() {
+    document.querySelectorAll('.bookmark-dropdown.open').forEach((el) => {
+        el.classList.remove('open');
+        clearBookmarkDropdownLayout(el);
+        syncBookmarkGearAria(el);
+    });
+}
+
+function syncBookmarkGearAria(dropdownEl) {
+    if (!dropdownEl || !dropdownEl.closest) return;
+    const wrap = dropdownEl.closest('.bookmark-gear-wrap');
+    const btn = wrap && wrap.querySelector('.bookmark-gear-btn');
+    if (!btn) return;
+    btn.setAttribute('aria-expanded', dropdownEl.classList.contains('open') ? 'true' : 'false');
+}
+
+/** Remove inline position usado quando o menu está aberto (viewport). */
+function clearBookmarkDropdownLayout(dd) {
+    if (!dd || !dd.style) return;
+    dd.style.position = '';
+    dd.style.left = '';
+    dd.style.right = '';
+    dd.style.top = '';
+    dd.style.bottom = '';
+    dd.style.width = '';
+    dd.style.zIndex = '';
+}
+
+/** Posição fixa alinhada à engrenagem para não ser cortada pelo overflow da sidebar. */
+function anchorBookmarkDropdown(dd, anchorBtn) {
+    if (!dd || !anchorBtn) return;
+    const MENU_WIDTH = 184;
+    const gutter = 6;
+    const br = anchorBtn.getBoundingClientRect();
+    dd.style.position = 'fixed';
+    dd.style.zIndex = '6100';
+    let left = Math.round(br.right - MENU_WIDTH);
+    left = Math.max(gutter, Math.min(left, window.innerWidth - MENU_WIDTH - gutter));
+    dd.style.left = `${left}px`;
+    dd.style.right = 'auto';
+    dd.style.top = `${Math.round(br.bottom + gutter)}px`;
+    dd.style.bottom = 'auto';
+    dd.style.width = `${Math.round(MENU_WIDTH)}px`;
+}
+
+function toggleBookmarkDropdown(event, menuId) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const el = document.getElementById(menuId);
+    if (!el) return;
+
+    document.querySelectorAll('.bookmark-dropdown.open').forEach((d) => {
+        if (d.id !== menuId) {
+            d.classList.remove('open');
+            clearBookmarkDropdownLayout(d);
+            syncBookmarkGearAria(d);
+        }
+    });
+
+    const anchorBtn = el.closest('.bookmark-gear-wrap')?.querySelector('.bookmark-gear-btn');
+    const willOpen = !el.classList.contains('open');
+    if (willOpen) {
+        el.classList.add('open');
+        anchorBookmarkDropdown(el, anchorBtn);
+    } else {
+        el.classList.remove('open');
+        clearBookmarkDropdownLayout(el);
+    }
+    syncBookmarkGearAria(el);
+}
+
+async function editSavedBookmark(key) {
+    closeBookmarkOptionMenus();
+    await loadConnection(key);
+    const hn = document.getElementById('hostname');
+    if (hn) {
+        try {
+            hn.focus();
+            hn.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } catch (err) {
+            /* ignore scroll errors in embed */
+        }
+    }
+}
 
 // Optimistic typing state
 let pendingEchoBuffer = [];
@@ -1488,8 +1589,12 @@ function toggleSection(sectionName) {
 async function loadSavedConnections() {
     try {
         console.log('Loading saved connections...');
-        const response = await window.pywebview.api.get_saved_connections();
+        const [response, groupsResponse] = await Promise.all([
+            window.pywebview.api.get_saved_connections(),
+            window.pywebview.api.get_connection_groups()
+        ]);
         const connections = JSON.parse(response);
+        savedConnectionGroups = JSON.parse(groupsResponse);
         console.log('Loaded connections:', connections.length, 'items');
         updateSavedConnectionsList(connections);
     } catch (error) {
@@ -1506,21 +1611,234 @@ function updateSavedConnectionsList(connections) {
         return;
     }
     
-    connections.forEach(conn => {
-        const item = document.createElement('div');
-        item.className = 'saved-connection-item';
-        item.innerHTML = `
-            <div class="saved-connection-info" onclick="loadConnection('${escapeJs(conn.key)}')">
-                <div class="saved-connection-name">${escapeHtml(conn.name || conn.key)}</div>
-                <div class="saved-connection-details">${escapeHtml(conn.hostname)}:${escapeHtml(String(conn.port))}</div>
-            </div>
-            <div class="saved-connection-actions">
-                <button class="action-btn" onclick="quickConnect('${escapeJs(conn.key)}'); event.stopPropagation();">Connect</button>
-                <button class="action-btn delete" onclick="deleteConnection('${escapeJs(conn.key)}'); event.stopPropagation();">Delete</button>
-            </div>
-        `;
-        container.appendChild(item);
+    const tree = buildBookmarkTree(connections);
+    tree.children.forEach((childNode, index) => {
+        if (childNode.type === 'group') {
+            container.appendChild(renderGroupNode(childNode, 0, index));
+        }
     });
+
+    if (tree.connections.length > 0) {
+        const ungroupedNode = {
+            type: 'group',
+            name: 'Ungrouped',
+            fullPath: '',
+            children: [],
+            connections: tree.connections
+        };
+        container.appendChild(renderGroupNode(ungroupedNode, 0, 'ungrouped'));
+    }
+}
+
+function buildBookmarkTree(connections) {
+    const root = {
+        type: 'root',
+        name: 'root',
+        fullPath: '',
+        children: [],
+        connections: []
+    };
+
+    const allGroups = new Set(savedConnectionGroups || []);
+    connections.forEach(conn => {
+        if (conn.group) allGroups.add(conn.group);
+    });
+
+    Array.from(allGroups)
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b))
+        .forEach(groupPath => {
+            const parts = groupPath.split('/').map(p => p.trim()).filter(Boolean);
+            let currentNode = root;
+            let currentPath = '';
+
+            parts.forEach(part => {
+                currentPath = currentPath ? `${currentPath}/${part}` : part;
+                let next = currentNode.children.find(child => child.name === part);
+                if (!next) {
+                    next = {
+                        type: 'group',
+                        name: part,
+                        fullPath: currentPath,
+                        children: [],
+                        connections: []
+                    };
+                    currentNode.children.push(next);
+                }
+                currentNode = next;
+            });
+        });
+
+    connections.forEach(conn => {
+        const groupPath = (conn.group || '').trim();
+        if (!groupPath) {
+            root.connections.push(conn);
+            return;
+        }
+
+        const parts = groupPath.split('/').map(p => p.trim()).filter(Boolean);
+        let currentNode = root;
+
+        for (const part of parts) {
+            let next = currentNode.children.find(child => child.name === part);
+            if (!next) {
+                const fallbackPath = currentNode.fullPath ? `${currentNode.fullPath}/${part}` : part;
+                next = {
+                    type: 'group',
+                    name: part,
+                    fullPath: fallbackPath,
+                    children: [],
+                    connections: []
+                };
+                currentNode.children.push(next);
+            }
+            currentNode = next;
+        }
+
+        currentNode.connections.push(conn);
+    });
+
+    sortBookmarkTree(root);
+    return root;
+}
+
+function sortBookmarkTree(node) {
+    if (node.children) {
+        node.children.sort((a, b) => a.name.localeCompare(b.name));
+        node.children.forEach(sortBookmarkTree);
+    }
+    if (node.connections) {
+        node.connections.sort((a, b) => (a.name || a.key || '').localeCompare(b.name || b.key || ''));
+    }
+}
+
+function isBookmarkExpanded(path) {
+    if (!path) return true;
+    return expandedBookmarkNodes.has(path);
+}
+
+function toggleBookmarkGroup(path) {
+    if (!path) return;
+    if (expandedBookmarkNodes.has(path)) {
+        expandedBookmarkNodes.delete(path);
+    } else {
+        expandedBookmarkNodes.add(path);
+    }
+    loadSavedConnections();
+}
+
+function renderGroupNode(node, depth, nodeIndex) {
+    const isExpanded = isBookmarkExpanded(node.fullPath);
+    const wrapper = document.createElement('div');
+    wrapper.className = 'bookmark-group-node';
+
+    const hasChildren = (node.children && node.children.length > 0) || (node.connections && node.connections.length > 0);
+    const count = (node.connections ? node.connections.length : 0) + countNestedConnections(node.children || []);
+    const indent = depth * 14;
+
+    const groupActions = node.fullPath
+        ? `
+            <button class="group-action-btn" onclick="createConnectionSubgroup('${escapeJs(node.fullPath)}'); event.stopPropagation();">+ Sub</button>
+            <button class="group-action-btn" onclick="renameConnectionGroup('${escapeJs(node.fullPath)}'); event.stopPropagation();">Rename</button>
+            <button class="group-action-btn delete" onclick="deleteConnectionGroup('${escapeJs(node.fullPath)}'); event.stopPropagation();">Delete</button>
+        `
+        : '';
+
+    wrapper.innerHTML = `
+        <div class="connection-group-header bookmark-group-header" style="padding-left: ${2 + indent}px;" onclick="${node.fullPath ? `toggleBookmarkGroup('${escapeJs(node.fullPath)}')` : ''}">
+            <span class="bookmark-caret ${isExpanded ? 'open' : ''}">${hasChildren ? '▾' : '•'}</span>
+            <span class="connection-group-title">${escapeHtml(node.name)}</span>
+            <span class="connection-group-count">${count}</span>
+            <div class="connection-group-actions">${groupActions}</div>
+        </div>
+    `;
+
+    if (isExpanded) {
+        node.children.forEach((childNode, index) => {
+            wrapper.appendChild(renderGroupNode(childNode, depth + 1, `${nodeIndex}-${index}`));
+        });
+
+        node.connections.forEach(conn => {
+            wrapper.appendChild(createSavedConnectionItem(conn, depth + 1));
+        });
+    }
+
+    return wrapper;
+}
+
+function countNestedConnections(children) {
+    return children.reduce((total, child) => {
+        const direct = child.connections ? child.connections.length : 0;
+        return total + direct + countNestedConnections(child.children || []);
+    }, 0);
+}
+
+function createSavedConnectionItem(conn, depth = 0) {
+    const displayName = getBookmarkDisplayName(conn);
+    const portVal = conn.port != null ? String(conn.port) : '22';
+    const detailLine = `${conn.username}@${conn.hostname}:${portVal}`;
+    const menuId = `bmdd-${bookmarkDropdownSeq++}`;
+    const key = conn.key;
+    const renameLabel = displayName;
+
+    const item = document.createElement('div');
+    item.className = 'saved-connection-item bookmark-item';
+    item.style.marginLeft = `${depth * 14}px`;
+
+    item.innerHTML = `
+        <div class="saved-connection-main">
+            <div class="saved-connection-text"></div>
+            <div class="bookmark-gear-wrap">
+                <button type="button" class="bookmark-gear-btn"
+                    aria-haspopup="true" aria-expanded="false"
+                    aria-label="Opções da conexão" title="Opções">⚙</button>
+                <div class="bookmark-dropdown" id="${menuId}" role="menu" aria-hidden="true"></div>
+            </div>
+        </div>`;
+
+    const textEl = item.querySelector('.saved-connection-text');
+    textEl.title = detailLine;
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'saved-connection-name';
+    nameEl.textContent = displayName;
+
+    const detailEl = document.createElement('div');
+    detailEl.className = 'saved-connection-details';
+    detailEl.textContent = detailLine;
+
+    textEl.appendChild(nameEl);
+    textEl.appendChild(detailEl);
+
+    const gearBtn = item.querySelector('.bookmark-gear-btn');
+    const dropdown = item.querySelector('.bookmark-dropdown');
+    if (!gearBtn || !dropdown) {
+        console.error('Bookmark item: missing gear or dropdown');
+        return item;
+    }
+    gearBtn.addEventListener('click', (e) => toggleBookmarkDropdown(e, menuId));
+
+    function addMenuItem(label, danger, handler) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = danger ? 'bookmark-menu-item bookmark-menu-danger' : 'bookmark-menu-item';
+        btn.role = 'menuitem';
+        btn.textContent = label;
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closeBookmarkOptionMenus();
+            handler();
+        });
+        dropdown.appendChild(btn);
+    }
+
+    addMenuItem('Editar', false, () => void editSavedBookmark(key));
+    addMenuItem('Conectar', false, () => void quickConnect(key));
+    addMenuItem('Renomear', false, () => renameConnection(key, renameLabel));
+    addMenuItem('Grupo…', false, () => moveConnectionToGroup(key, conn.group || ''));
+    addMenuItem('Excluir', true, () => deleteConnection(key));
+
+    return item;
 }
 
 async function loadConnection(key) {
@@ -1530,6 +1848,8 @@ async function loadConnection(key) {
         document.getElementById('hostname').value = conn.hostname;
         document.getElementById('port').value = conn.port || 22;
         document.getElementById('username').value = conn.username;
+        document.getElementById('deviceName').value = conn.name || '';
+        document.getElementById('connectionGroup').value = conn.group || '';
         
         if (conn.password) {
             document.getElementById('authType').value = 'password';
@@ -1569,6 +1889,141 @@ async function deleteConnection(key) {
             console.error('Error deleting connection:', error);
             alert('Error deleting connection');
         }
+    }
+}
+
+async function renameConnection(key, currentName) {
+    const newName = prompt('New host name:', currentName || '');
+    if (newName === null) return;
+
+    const trimmedName = newName.trim();
+    if (!trimmedName) {
+        alert('Host name cannot be empty');
+        return;
+    }
+
+    try {
+        const result = await window.pywebview.api.rename_saved_connection(key, trimmedName);
+        const parsedResult = JSON.parse(result);
+        if (parsedResult.success) {
+            await loadSavedConnections();
+        } else {
+            alert('Failed to rename host: ' + (parsedResult.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error renaming connection:', error);
+        alert('Error renaming host');
+    }
+}
+
+async function moveConnectionToGroup(key, currentGroup) {
+    const options = savedConnectionGroups.length > 0
+        ? `Existing groups: ${savedConnectionGroups.join(', ')}\n\n`
+        : '';
+    const groupName = prompt(`${options}Enter group name, or leave empty for Ungrouped:`, currentGroup || '');
+    if (groupName === null) return;
+
+    try {
+        const result = await window.pywebview.api.update_saved_connection_group(key, groupName.trim());
+        const parsedResult = JSON.parse(result);
+        if (parsedResult.success) {
+            await loadSavedConnections();
+        } else {
+            alert('Failed to update host group: ' + (parsedResult.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error moving connection to group:', error);
+        alert('Error updating host group');
+    }
+}
+
+async function createConnectionGroup() {
+    const groupName = prompt('New group path (ex: DER_MG/Servidor_UOP):');
+    if (groupName === null) return;
+
+    const trimmedName = groupName.trim();
+    if (!trimmedName) {
+        alert('Group name cannot be empty');
+        return;
+    }
+
+    try {
+        const result = await window.pywebview.api.create_connection_group(trimmedName);
+        const parsedResult = JSON.parse(result);
+        if (parsedResult.success) {
+            await loadSavedConnections();
+        } else {
+            alert('Failed to create group: ' + (parsedResult.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error creating group:', error);
+        alert('Error creating group');
+    }
+}
+
+async function createConnectionSubgroup(parentPath) {
+    const subgroup = prompt(`New subgroup under "${parentPath}"`);
+    if (subgroup === null) return;
+    const trimmedSubgroup = subgroup.trim();
+    if (!trimmedSubgroup) {
+        alert('Subgroup name cannot be empty');
+        return;
+    }
+
+    const fullPath = `${parentPath}/${trimmedSubgroup}`;
+    try {
+        const result = await window.pywebview.api.create_connection_group(fullPath);
+        const parsedResult = JSON.parse(result);
+        if (parsedResult.success) {
+            expandedBookmarkNodes.add(parentPath);
+            await loadSavedConnections();
+        } else {
+            alert('Failed to create subgroup: ' + (parsedResult.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error creating subgroup:', error);
+        alert('Error creating subgroup');
+    }
+}
+
+async function renameConnectionGroup(oldName) {
+    const newName = prompt('New group path/name:', oldName);
+    if (newName === null) return;
+
+    const trimmedName = newName.trim();
+    if (!trimmedName) {
+        alert('Group name cannot be empty');
+        return;
+    }
+
+    try {
+        const result = await window.pywebview.api.rename_connection_group(oldName, trimmedName);
+        const parsedResult = JSON.parse(result);
+        if (parsedResult.success) {
+            await loadSavedConnections();
+        } else {
+            alert('Failed to rename group: ' + (parsedResult.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error renaming group:', error);
+        alert('Error renaming group');
+    }
+}
+
+async function deleteConnectionGroup(groupName) {
+    if (!confirm(`Delete group "${groupName}" and all subgroups? Hosts will move to Ungrouped.`)) return;
+
+    try {
+        const result = await window.pywebview.api.delete_connection_group(groupName);
+        const parsedResult = JSON.parse(result);
+        if (parsedResult.success) {
+            await loadSavedConnections();
+        } else {
+            alert('Failed to delete group: ' + (parsedResult.error || 'Unknown error'));
+        }
+    } catch (error) {
+        console.error('Error deleting group:', error);
+        alert('Error deleting group');
     }
 }
 
@@ -2187,6 +2642,11 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     
     waitForAPI();
+
+    document.addEventListener('click', (e) => {
+        if (e.target.closest('.bookmark-gear-wrap')) return;
+        closeBookmarkOptionMenus();
+    });
     
     // Handle auth type change
     document.getElementById('authType').addEventListener('change', (e) => {
@@ -2202,8 +2662,15 @@ window.addEventListener('DOMContentLoaded', () => {
 
 async function connect() {
     const hostname = document.getElementById('hostname').value;
-    const port = document.getElementById('port').value || 22;
+    const portRaw = document.getElementById('port').value;
+    const parsedPort = parseInt(portRaw, 10);
+    const port =
+        Number.isFinite(parsedPort) && parsedPort >= 1 && parsedPort <= 65535
+            ? parsedPort
+            : 22;
     const username = document.getElementById('username').value;
+    const deviceName = document.getElementById('deviceName').value.trim();
+    const connectionGroup = document.getElementById('connectionGroup').value.trim();
     const authType = document.getElementById('authType').value;
     const password = authType === 'password' ? document.getElementById('password').value : null;
     const keyPath = authType === 'key' ? document.getElementById('keyPath').value : null;
@@ -2221,22 +2688,25 @@ async function connect() {
     try {
         // Create new session
         const sessionId = await window.pywebview.api.create_session();
-        
+
         // Connect (with host verification if needed)
+        // Nota: name e group só vão para o perfil salvo (bookmarks); o SSH usa só hostname, port, username, password/keyPath.
         const result = await connectWithHostVerification(sessionId, {
             hostname,
-            port: parseInt(port),
+            port,
             username,
+            name: deviceName || `${username}@${hostname}`,
+            group: connectionGroup,
             password,
             keyPath,
             save: saveConnection
         });
-        
+
         console.log('Connection result:', result);
-        
+
         if (result.success) {
             console.log('Connection successful, creating terminal...');
-            
+
             // Add basic session info first
             sessions[sessionId] = {
                 id: sessionId,
@@ -2244,21 +2714,16 @@ async function connect() {
                 username,
                 connected: true
             };
-            
+
             // Create terminal (this will update the sessions object)
             createTerminalForSession(sessionId, hostname);
-            
+
             updateSessionsList();
             switchToSession(sessionId);
-            
+
             // Start polling for output
             startOutputPolling(sessionId);
-            
-            // Reload saved connections if a new one was saved
-            if (saveConnection) {
-                await loadSavedConnections();
-            }
-            
+
             console.log('Terminal setup complete');
         } else {
             console.error('Connection failed:', result.error);
@@ -2271,6 +2736,15 @@ async function connect() {
         alert('Connection error: ' + error);
         document.getElementById('connectingScreen').style.display = 'none';
         document.getElementById('welcomeScreen').style.display = 'flex';
+    } finally {
+        // O backend grava o bookmark antes da tentativa SSH; atualizar lista mesmo se a conexão falhar.
+        if (saveConnection) {
+            try {
+                await loadSavedConnections();
+            } catch (_) {
+                /* ignore */
+            }
+        }
     }
 }
 
