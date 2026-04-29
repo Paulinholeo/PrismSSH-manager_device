@@ -10,6 +10,12 @@ let savedConnectionGroups = [];
 let expandedBookmarkNodes = new Set();
 let bookmarkDropdownSeq = 0;
 
+/** Sessão com foco de teclado (Alt+Tab / clique na barra); input SSH só vai para esta. */
+let focusedSessionId = null;
+/** Layout das secções de terminal entre si: só uma sessão visível ou colunas ou empilhado. */
+let sessionViewLayout = 'single';
+const SESSION_VIEW_LAYOUT_KEY = 'prismssh.sessionViewLayout';
+
 /** Rótulo exibido na árvore de bookmarks (Device Name salvos no perfil). */
 function getBookmarkDisplayName(conn) {
     if (!conn) return '';
@@ -149,6 +155,152 @@ function stripPredictedEchoes(output) {
     return output.substring(outputPos);
 }
 
+/** Eco otimista apenas na sessão com foco de teclado. */
+function stripPredictedEchoesFiltered(sessionId, output) {
+    if (sessionId !== focusedSessionId) return output;
+    return stripPredictedEchoes(output);
+}
+
+function getSessionPaneTitle(sessionId) {
+    const s = sessions[sessionId];
+    if (!s) return '';
+    if (s.label != null && String(s.label).trim()) return String(s.label).trim();
+    if (s.username != null && s.hostname != null) return `${s.username}@${s.hostname}`;
+    const part = sessionId.split('_')[1];
+    return part ? `Sessão ${part}` : sessionId;
+}
+
+function getConnectedSessionsOrderedForSplit() {
+    return Object.keys(sessions).filter((id) => sessions[id] && sessions[id].connected !== false && sessions[id].terminal);
+}
+
+function cycleTerminalPaneFocus(delta) {
+    const ids = getConnectedSessionsOrderedForSplit();
+    if (ids.length < 2) return;
+    let nextIdx = ids.indexOf(focusedSessionId);
+    if (nextIdx < 0) nextIdx = 0;
+    nextIdx = (nextIdx + delta + ids.length) % ids.length;
+    switchToSession(ids[nextIdx]);
+}
+
+function readStoredSessionViewLayout() {
+    try {
+        const v = localStorage.getItem(SESSION_VIEW_LAYOUT_KEY);
+        return v === 'split-h' || v === 'split-v' || v === 'single' ? v : 'single';
+    } catch (e) {
+        return 'single';
+    }
+}
+
+function updateSessionSplitToolbarButtons() {
+    const map = {
+        single: 'btnSessionLayoutSingle',
+        'split-h': 'btnSessionLayoutSplitH',
+        'split-v': 'btnSessionLayoutSplitV'
+    };
+    Object.keys(map).forEach((mode) => {
+        const el = document.getElementById(map[mode]);
+        if (el) el.classList.toggle('active', sessionViewLayout === mode);
+    });
+}
+
+function applyTerminalPaneDOMVisibility() {
+    Object.keys(sessions).forEach((sid) => {
+        const s = sessions[sid];
+        if (!s?.paneSection) return;
+        if (sessionViewLayout === 'single') {
+            s.paneSection.classList.toggle('terminal-pane-visible', sid === focusedSessionId);
+        } else {
+            const show = !!s.terminal && s.connected !== false;
+            s.paneSection.classList.toggle('terminal-pane-visible', show);
+        }
+    });
+
+    Object.keys(sessions).forEach((sid) => {
+        const s = sessions[sid];
+        if (!s?.paneHeaderEl) return;
+        s.paneHeaderEl.classList.toggle('terminal-pane-focused', sid === focusedSessionId);
+    });
+}
+
+function resizeVisibleSessionsCalculators() {
+    Object.keys(sessions).forEach((sid) => {
+        const s = sessions[sid];
+        if (!s?.calculateSize) return;
+        if (sessionViewLayout === 'single' && sid !== focusedSessionId) return;
+        if (s.connected === false) return;
+        s.calculateSize();
+    });
+}
+
+function notifyTerminalViewportResizeAll() {
+    [80, 200, 400].forEach((ms) => {
+        setTimeout(() => resizeVisibleSessionsCalculators(), ms);
+    });
+}
+
+function applySessionPaneLayoutClasses() {
+    const root = document.getElementById('terminalWrapper');
+    if (!root) return;
+    root.classList.remove(
+        'terminal-session-layout-single',
+        'terminal-session-layout-split-h',
+        'terminal-session-layout-split-v'
+    );
+    if (sessionViewLayout === 'single') root.classList.add('terminal-session-layout-single');
+    else if (sessionViewLayout === 'split-h') root.classList.add('terminal-session-layout-split-h');
+    else root.classList.add('terminal-session-layout-split-v');
+    updateSessionSplitToolbarButtons();
+    applyTerminalPaneDOMVisibility();
+}
+
+function setSessionViewLayout(mode) {
+    if (!['single', 'split-h', 'split-v'].includes(mode)) return;
+    sessionViewLayout = mode;
+    try {
+        localStorage.setItem(SESSION_VIEW_LAYOUT_KEY, sessionViewLayout);
+    } catch (e) {
+        /* ignore */
+    }
+    applySessionPaneLayoutClasses();
+    notifyTerminalViewportResizeAll();
+}
+
+function initSessionViewLayout() {
+    sessionViewLayout = readStoredSessionViewLayout();
+    applySessionPaneLayoutClasses();
+}
+
+function installSessionPaneKeyboardCycle() {
+    if (window.__prismsshSessionPaneShortcuts) return;
+    window.__prismsshSessionPaneShortcuts = true;
+    window.addEventListener(
+        'keydown',
+        (e) => {
+            if (sessionViewLayout === 'single') return;
+            const ts = document.getElementById('terminalWrapper');
+            if (!ts || ts.style.display === 'none') return;
+            const ids = getConnectedSessionsOrderedForSplit();
+            if (ids.length < 2) return;
+
+            const key = e.key;
+            const code = e.code;
+
+            if (e.altKey && key === 'Tab') {
+                e.preventDefault();
+                cycleTerminalPaneFocus(e.shiftKey ? -1 : 1);
+                return;
+            }
+
+            if (e.ctrlKey && !e.metaKey && !e.altKey && (code === 'PageDown' || code === 'PageUp')) {
+                e.preventDefault();
+                cycleTerminalPaneFocus(code === 'PageDown' ? 1 : -1);
+            }
+        },
+        true
+    );
+}
+
 // Tool panel functions
 function openTool(toolName) {
     // Check if we have an active session
@@ -188,12 +340,8 @@ function openTool(toolName) {
         initializePortForwarding();
     }
     
-    // Resize terminal after sidebar opens
-    setTimeout(() => {
-        if (sessions[currentSessionId]?.calculateSize) {
-            sessions[currentSessionId].calculateSize();
-        }
-    }, 350); // After animation completes
+    // Resize terminals after sidebar opens (todas as sessões visíveis no modo split)
+    setTimeout(() => notifyTerminalViewportResize(), 350);
 }
 
 function closeToolPanel() {
@@ -206,12 +354,58 @@ function closeToolPanel() {
         panel.classList.remove('active');
     });
     
-    // Resize terminal after sidebar closes
-    setTimeout(() => {
-        if (sessions[currentSessionId]?.calculateSize) {
-            sessions[currentSessionId].calculateSize();
-        }
-    }, 350);
+    setTimeout(() => notifyTerminalViewportResize(), 350);
+}
+
+let workspaceMaximized = false;
+
+function notifyTerminalViewportResize() {
+    notifyTerminalViewportResizeAll();
+}
+
+function applyTerminalWorkspaceDOM() {
+    const app = document.querySelector('.app');
+    const content = document.getElementById('contentArea');
+    const iconMax = document.getElementById('iconMaximize');
+    const iconRest = document.getElementById('iconRestore');
+    const toggleMaxBtn = document.getElementById('btnLayoutToggleMax');
+
+    if (!app || !content) return;
+
+    // Split de workspace (terminal vs ferramentas) foi removido da UI.
+    // Aqui controlamos apenas maximizar/restaurar; o split ativo é entre terminais.
+    content.classList.remove('terminal-split-horizontal', 'terminal-split-vertical');
+
+    if (workspaceMaximized) {
+        app.classList.add('terminal-layout-max');
+    } else {
+        app.classList.remove('terminal-layout-max');
+    }
+
+    if (toggleMaxBtn) {
+        toggleMaxBtn.classList.toggle('active', workspaceMaximized);
+        toggleMaxBtn.setAttribute(
+            'title',
+            workspaceMaximized
+                ? 'Restaurar layout'
+                : 'Maximizar terminal'
+        );
+    }
+    if (iconMax && iconRest) {
+        iconMax.style.display = workspaceMaximized ? 'none' : 'block';
+        iconRest.style.display = workspaceMaximized ? 'block' : 'none';
+    }
+}
+
+function toggleTerminalMaximized() {
+    workspaceMaximized = !workspaceMaximized;
+    applyTerminalWorkspaceDOM();
+    notifyTerminalViewportResize();
+}
+
+function initTerminalWorkspaceLayout() {
+    workspaceMaximized = false;
+    applyTerminalWorkspaceDOM();
 }
 
 // SFTP Functions
@@ -1797,7 +1991,7 @@ function createSavedConnectionItem(conn, depth = 0) {
         </div>`;
 
     const textEl = item.querySelector('.saved-connection-text');
-    textEl.title = detailLine;
+    textEl.title = `${detailLine} • Duplo clique para conectar`;
 
     const nameEl = document.createElement('div');
     nameEl.className = 'saved-connection-name';
@@ -1809,6 +2003,12 @@ function createSavedConnectionItem(conn, depth = 0) {
 
     textEl.appendChild(nameEl);
     textEl.appendChild(detailEl);
+
+    textEl.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void quickConnect(key);
+    });
 
     const gearBtn = item.querySelector('.bookmark-gear-btn');
     const dropdown = item.querySelector('.bookmark-dropdown');
@@ -2615,6 +2815,11 @@ function showCopyNotification(message, type = 'success') {
 // Wait for page to load
 window.addEventListener('DOMContentLoaded', () => {
     console.log('Page loaded, checking Terminal availability...');
+
+    initTerminalWorkspaceLayout();
+    initSessionViewLayout();
+    installSessionPaneKeyboardCycle();
+    installTerminalBrowserShortcutShield();
     
     // Check if Terminal is available
     if (typeof Terminal === 'undefined') {
@@ -2659,6 +2864,42 @@ window.addEventListener('DOMContentLoaded', () => {
         }
     });
 });
+
+/**
+ * Evita que o motor WebView/Chromium aplique atalhos do browser (F5 atualizar, Ctrl+R, F10 menu, etc.)
+ * quando o foco está no xterm — necessário para midnight commander, less, diálogos ncurses, etc.
+ */
+function installTerminalBrowserShortcutShield() {
+    if (window.__prismsshTermShortcutShieldInstalled) return;
+    window.__prismsshTermShortcutShieldInstalled = true;
+
+    function isXtermFocused() {
+        const w = document.getElementById('terminalWrapper');
+        if (!w || w.style.display === 'none') return false;
+        const el = document.activeElement;
+        return !!(el && el.closest && el.closest('.xterm'));
+    }
+
+    window.addEventListener(
+        'keydown',
+        (e) => {
+            if (!isXtermFocused()) return;
+            const k = e.key;
+
+            /* Só impedir comportamento do navegador (ex.: recarregar, fechar tab). Ctrl+R/W/L ficam livres para o shell (readline). */
+            if (/^F\d{1,2}$/.test(k)) {
+                e.preventDefault();
+                return;
+            }
+            /* Hard refresh só no navegador; não remover Ctrl+Shift+R do shell inadvertidamente só se combinado explicitamente pelo WebView — comum segurar apenas isto aqui para evitar recarregar a app inteira em debug. Se atrapalhar algo raro no terminal, remover este bloco. */
+            if (e.ctrlKey && e.shiftKey && (k === 'R' || k === 'r')) {
+                e.preventDefault();
+                return;
+            }
+        },
+        true,
+    );
+}
 
 async function connect() {
     const hostname = document.getElementById('hostname').value;
@@ -2712,7 +2953,8 @@ async function connect() {
                 id: sessionId,
                 hostname,
                 username,
-                connected: true
+                connected: true,
+                label: deviceName.trim() ? deviceName.trim() : `${username}@${hostname}`
             };
 
             // Create terminal (this will update the sessions object)
@@ -2721,8 +2963,8 @@ async function connect() {
             updateSessionsList();
             switchToSession(sessionId);
 
-            // Start polling for output
-            startOutputPolling(sessionId);
+            // Start polling for output from all sessions (global tick)
+            restartGlobalOutputPolling();
 
             console.log('Terminal setup complete');
         } else {
@@ -2750,18 +2992,38 @@ async function connect() {
 
 function createTerminalForSession(sessionId, hostname) {
     try {
-        // Create a unique terminal container for this session
-        const terminalWrapper = document.getElementById('terminalWrapper');
+        const paneRoot = document.getElementById('terminalWrapper');
+        if (!paneRoot) return;
+
+        const section = document.createElement('section');
+        section.className = 'terminal-pane';
+        section.dataset.sessionId = sessionId;
+
+        const header = document.createElement('header');
+        header.className = 'terminal-pane-header';
+        header.innerHTML = `
+            <span class="terminal-pane-title">${escapeHtml(getSessionPaneTitle(sessionId))}</span>
+            <span class="terminal-pane-focus-dot" aria-hidden="true"></span>`;
+        header.tabIndex = 0;
+        header.onclick = () => switchToSession(sessionId);
+
+        const body = document.createElement('div');
+        body.className = 'terminal-pane-body';
+        body.addEventListener('mousedown', () => switchToSession(sessionId));
+
+        const inner = document.createElement('div');
+        inner.className = 'terminal-pane-body-inner';
+
         const terminalElement = document.createElement('div');
-        terminalElement.id = `terminal-${sessionId}`;
-        terminalElement.style.position = 'absolute';
-        terminalElement.style.top = '0';
-        terminalElement.style.left = '0';
-        terminalElement.style.right = '0';
-        terminalElement.style.bottom = '0';
-        terminalElement.style.display = 'none'; // Initially hidden
-        terminalWrapper.appendChild(terminalElement);
-        
+        terminalElement.className = 'terminal-xterm-host';
+        terminalElement.id = `terminal-host-${sessionId}`;
+
+        inner.appendChild(terminalElement);
+        body.appendChild(inner);
+        section.appendChild(header);
+        section.appendChild(body);
+        paneRoot.appendChild(section);
+
         const terminal = new Terminal({
             cursorBlink: true,
             fontSize: 14,
@@ -2775,45 +3037,35 @@ function createTerminalForSession(sessionId, hostname) {
             convertEol: true,
             windowsMode: true
         });
-        
-        // Create fit addon
+
         let terminalFitAddon = null;
         if (typeof FitAddon !== 'undefined') {
             terminalFitAddon = new FitAddon.FitAddon();
             terminal.loadAddon(terminalFitAddon);
         }
-        
-        // Open terminal
+
         terminal.open(terminalElement);
 
-        // Set up copy/paste functionality
         setupTerminalClipboard(terminal, sessionId);
-        
-        // Get container dimensions and calculate rows/cols
+
         const calculateTerminalSize = () => {
-            const wrapper = document.getElementById('terminalWrapper');
-            if (!wrapper) return;
-            
-            const rect = wrapper.getBoundingClientRect();
-            const padding = 16; // Account for padding
-            const availableHeight = rect.height - padding * 2;
-            const availableWidth = rect.width - padding * 2;
-            
-            // Estimate character dimensions
-            const charHeight = 17; // Approximate line height for 14px font
-            const charWidth = 8; // Approximate char width
-            
+            const rect = terminalElement.getBoundingClientRect();
+            if (rect.width < 4 || rect.height < 4) return;
+
+            const padding = 12;
+            const availableHeight = Math.max(0, rect.height - padding * 2);
+            const availableWidth = Math.max(0, rect.width - padding * 2);
+
+            const charHeight = 17;
+            const charWidth = 8;
+
             const rows = Math.floor(availableHeight / charHeight);
             const cols = Math.floor(availableWidth / charWidth);
-            
-            console.log(`Terminal size: ${cols}x${rows} (${availableWidth}x${availableHeight}px)`);
-            
-            // Manually resize terminal
+
             if (rows > 0 && cols > 0) {
                 terminal.resize(cols, rows);
             }
-            
-            // Then try fit addon
+
             if (terminalFitAddon) {
                 try {
                     terminalFitAddon.fit();
@@ -2822,184 +3074,199 @@ function createTerminalForSession(sessionId, hostname) {
                 }
             }
         };
-        
-        // Calculate size after delays
+
         setTimeout(calculateTerminalSize, 50);
         setTimeout(calculateTerminalSize, 200);
         setTimeout(calculateTerminalSize, 500);
-        
+
         terminal.focus();
-        
-        // Handle input - ensure input goes to the correct session
+
         terminal.onData((data) => {
-            if (currentSessionId === sessionId) {
-                if (isOptimisticChar(data)) {
-                    if (data.charCodeAt(0) === 127) {
-                        // Only optimistic backspace if we have pending optimistic chars to undo
-                        const hasPendingChar = pendingEchoBuffer.some(e => e.char);
-                        if (hasPendingChar) {
-                            // Remove the last optimistic char from buffer
-                            for (let i = pendingEchoBuffer.length - 1; i >= 0; i--) {
-                                if (pendingEchoBuffer[i].char) {
-                                    pendingEchoBuffer.splice(i, 1);
-                                    break;
-                                }
+            if (focusedSessionId !== sessionId) return;
+            if (isOptimisticChar(data)) {
+                if (data.charCodeAt(0) === 127) {
+                    const hasPendingChar = pendingEchoBuffer.some((e) => e.char);
+                    if (hasPendingChar) {
+                        for (let i = pendingEchoBuffer.length - 1; i >= 0; i--) {
+                            if (pendingEchoBuffer[i].char) {
+                                pendingEchoBuffer.splice(i, 1);
+                                break;
                             }
-                            terminal.write('\b \b');
                         }
-                    } else {
-                        terminal.write(data);
-                        pendingEchoBuffer.push({ char: data, time: Date.now() });
+                        terminal.write('\b \b');
                     }
+                } else {
+                    terminal.write(data);
+                    pendingEchoBuffer.push({ char: data, time: Date.now() });
                 }
-                setTimeout(() => {
-                    window.pywebview.api.send_input(sessionId, data);
-                }, 0);
             }
+            setTimeout(() => {
+                window.pywebview.api.send_input(sessionId, data);
+            }, 0);
         });
-        
-        // Handle resize
+
         terminal.onResize(async ({ cols, rows }) => {
             console.log(`Terminal resized to ${cols}x${rows}`);
             await window.pywebview.api.resize_terminal(sessionId, cols, rows);
         });
-        
+
         currentTerminal = terminal;
-        sessions[sessionId] = { 
-            ...sessions[sessionId], 
-            terminal, 
-            terminalElement,
-            fitAddon: terminalFitAddon,
-            calculateSize: calculateTerminalSize
-        };
-        
-        // Set up resize observer
+
         const resizeObserver = new ResizeObserver(() => {
-            if (currentSessionId === sessionId) {
-                calculateTerminalSize();
-            }
+            const vis = sessionViewLayout !== 'single' || focusedSessionId === sessionId;
+            if (vis) calculateTerminalSize();
         });
-        
-        const wrapper = document.getElementById('terminalWrapper');
-        if (wrapper) {
-            resizeObserver.observe(wrapper);
-        }
-        
+        resizeObserver.observe(body);
+
+        sessions[sessionId] = {
+            ...sessions[sessionId],
+            terminal,
+            terminalElement,
+            paneSection: section,
+            paneHeaderEl: header,
+            paneBody: body,
+            fitAddon: terminalFitAddon,
+            calculateSize: calculateTerminalSize,
+            resizeObserver
+        };
     } catch (error) {
         console.error('Error creating terminal:', error);
         alert('Failed to create terminal: ' + error.message);
     }
 }
 
-async function startOutputPolling(sessionId) {
+function restartGlobalOutputPolling() {
     if (outputPollingInterval) {
         clearInterval(outputPollingInterval);
     }
-    
+
     outputPollingInterval = setInterval(async () => {
-        if (currentSessionId === sessionId) {
+        const liveIds = Object.keys(sessions).filter(
+            (sid) => sessions[sid]?.terminal && sessions[sid]?.connected !== false
+        );
+        if (liveIds.length === 0) return;
+
+        for (const sessionId of liveIds) {
+            const shouldReadOutput =
+                sessionViewLayout !== 'single' || focusedSessionId === sessionId;
             try {
-                // Get output
-                const result = JSON.parse(await window.pywebview.api.get_output(sessionId));
-                if (result.output) {
-                    const filtered = stripPredictedEchoes(result.output);
-                    if (filtered.length > 0) {
-                        currentTerminal.write(filtered);
+                if (shouldReadOutput) {
+                    const result = JSON.parse(await window.pywebview.api.get_output(sessionId));
+                    if (result.output && sessions[sessionId]?.terminal) {
+                        const filtered = stripPredictedEchoesFiltered(sessionId, result.output);
+                        if (filtered.length > 0) {
+                            sessions[sessionId].terminal.write(filtered);
+                        }
                     }
                 }
-                
-                // Check session status
+
                 const statusResult = JSON.parse(await window.pywebview.api.get_status(sessionId));
                 if (!statusResult.connected) {
-                    // Session disconnected
                     console.log(`Session ${sessionId} disconnected`);
                     handleSessionDisconnect(sessionId, false);
                 }
             } catch (error) {
                 console.error('Error polling output:', error);
-                // If we can't poll, assume session is disconnected
                 handleSessionDisconnect(sessionId, false);
             }
         }
-    }, 50); // Poll every 50ms
+    }, 50);
 }
 
 function handleSessionDisconnect(sessionId, wasLogout) {
     if (!sessions[sessionId]) return;
-    
+
     console.log(`Handling disconnect for session ${sessionId}, logout: ${wasLogout}`);
-    
-    // Stop polling
-    if (outputPollingInterval) {
-        clearInterval(outputPollingInterval);
-        outputPollingInterval = null;
-    }
-    
-    // Update UI
-    const message = wasLogout ? 
-        '\r\n\r\n[Session ended - User logged out]\r\n' : 
-        '\r\n\r\n[Session ended - Connection lost]\r\n';
-    
+
+    const message = wasLogout
+        ? '\r\n\r\n[Session ended - User logged out]\r\n'
+        : '\r\n\r\n[Session ended - Connection lost]\r\n';
+
     if (sessions[sessionId].terminal) {
         sessions[sessionId].terminal.write(message);
     }
-    
-    // Mark session as disconnected
+
     sessions[sessionId].connected = false;
-    
-    // Update sessions list
+
+    const needRefocus = focusedSessionId === sessionId || currentSessionId === sessionId;
+    const others = Object.keys(sessions).filter(
+        (id) => id !== sessionId && sessions[id]?.connected !== false && sessions[id]?.terminal
+    );
+    if (needRefocus && others.length) {
+        switchToSession(others[0]);
+    }
+
     updateSessionsList();
-    
-    // Update status bar if this is the current session
-    if (currentSessionId === sessionId) {
+    applyTerminalPaneDOMVisibility();
+
+    if (needRefocus && others.length === 0) {
         document.getElementById('statusBar').style.display = 'none';
-        
-        // Show reconnect option after a delay
+
         setTimeout(() => {
-            if (!sessions[sessionId].connected) {
-                if (confirm('Connection lost. Would you like to reconnect?')) {
-                    reconnectSession(sessionId);
-                } else {
-                    // Remove the session if user doesn't want to reconnect
-                    removeSession(sessionId);
-                }
+            if (!sessions[sessionId] || sessions[sessionId].connected) return;
+            if (confirm('Connection lost. Would you like to reconnect?')) {
+                reconnectSession(sessionId);
+            } else {
+                removeSession(sessionId);
             }
         }, 1000);
+
+        setTimeout(() => {
+            if (sessions[sessionId] && !sessions[sessionId].connected) {
+                removeSession(sessionId);
+            }
+        }, 30000);
     }
-    
-    // Auto-remove session after 30 seconds if still disconnected
-    setTimeout(() => {
-        if (sessions[sessionId] && !sessions[sessionId].connected) {
-            removeSession(sessionId);
-        }
-    }, 30000);
 }
 
 function removeSession(sessionId) {
     console.log(`Removing session ${sessionId}`);
     
     if (sessions[sessionId]) {
+        if (sessions[sessionId].resizeObserver && sessions[sessionId].resizeObserver.disconnect) {
+            try {
+                sessions[sessionId].resizeObserver.disconnect();
+            } catch (e) {
+                /* noop */
+            }
+        }
+        
         // Cleanup terminal
         if (sessions[sessionId].terminal) {
             sessions[sessionId].terminal.dispose();
         }
         
-        // Remove terminal element from DOM
-        if (sessions[sessionId].terminalElement) {
+        if (sessions[sessionId].paneSection) {
+            sessions[sessionId].paneSection.remove();
+        } else if (sessions[sessionId].terminalElement) {
             sessions[sessionId].terminalElement.remove();
         }
         
-        // Remove from sessions
         delete sessions[sessionId];
         updateSessionsList();
-        
-        // If this was the current session, show welcome screen
-        if (currentSessionId === sessionId) {
+
+        const remaining = getConnectedSessionsOrderedForSplit();
+
+        const hadFocus =
+            focusedSessionId === sessionId || currentSessionId === sessionId;
+        const nextId = remaining[0];
+
+        if (remaining.length === 0) {
+            if (outputPollingInterval) {
+                clearInterval(outputPollingInterval);
+                outputPollingInterval = null;
+            }
+        }
+
+        if (remaining.length === 0) {
             currentSessionId = null;
             currentTerminal = null;
+            focusedSessionId = null;
             document.getElementById('terminalWrapper').style.display = 'none';
             document.getElementById('welcomeScreen').style.display = 'flex';
             document.getElementById('statusBar').style.display = 'none';
+        } else if (hadFocus && nextId) {
+            switchToSession(nextId);
         }
     }
 }
@@ -3023,59 +3290,40 @@ async function reconnectSession(oldSessionId) {
 
 function switchToSession(sessionId) {
     console.log(`Switching to session ${sessionId} from ${currentSessionId}`);
-    
-    // Stop current output polling if switching from another session
-    if (outputPollingInterval) {
-        clearInterval(outputPollingInterval);
-        outputPollingInterval = null;
-    }
-    
-    const oldSessionId = currentSessionId;
-    currentSessionId = sessionId;
+
+    if (!sessions[sessionId]) return;
+
     pendingEchoBuffer = [];
-    
-    // Hide all terminal elements from previous sessions
-    Object.keys(sessions).forEach(id => {
-        if (sessions[id].terminalElement) {
-            sessions[id].terminalElement.style.display = 'none';
-        }
-    });
-    
-    // Hide all screens
+    focusedSessionId = sessionId;
+    currentSessionId = sessionId;
+
     document.getElementById('welcomeScreen').style.display = 'none';
     document.getElementById('connectingScreen').style.display = 'none';
-    document.getElementById('terminalWrapper').style.display = 'block';
-    
-    // Show status bar
+    document.getElementById('terminalWrapper').style.display = 'flex';
+
     document.getElementById('statusBar').style.display = 'flex';
-    document.getElementById('statusHost').textContent = escapeHtml(sessions[sessionId].hostname);
-    
-    // Show and focus the correct terminal
-    if (sessions[sessionId].terminal && sessions[sessionId].terminalElement) {
+    document.getElementById('statusHost').textContent = escapeHtml(getSessionPaneTitle(sessionId));
+
+    applyTerminalPaneDOMVisibility();
+
+    if (sessions[sessionId].terminal) {
         currentTerminal = sessions[sessionId].terminal;
-        
-        // Show this terminal container
-        sessions[sessionId].terminalElement.style.display = 'block';
-        
-        // Focus the terminal
         currentTerminal.focus();
-        
-        // Force fit after switching
         setTimeout(() => {
             if (sessions[sessionId].fitAddon) {
                 try {
                     sessions[sessionId].fitAddon.fit();
-                    console.log(`Terminal fitted for session ${sessionId}`);
                 } catch (e) {
                     console.error('Error fitting terminal on switch:', e);
                 }
             }
         }, 100);
-        
-        // Start polling for this session
-        startOutputPolling(sessionId);
     }
-    
+
+    restartGlobalOutputPolling();
+
+    notifyTerminalViewportResize();
+
     updateSessionsList();
 }
 
@@ -3856,13 +4104,7 @@ function displayPortForwards(forwards) {
     forwardsList.innerHTML = forwardsHtml;
 }
 
-// Window resize handling
+// Window resize handling — atualiza todas as sessões com painéis visíveis
 window.addEventListener('resize', () => {
-    if (currentTerminal && sessions[currentSessionId]) {
-        setTimeout(() => {
-            if (sessions[currentSessionId].calculateSize) {
-                sessions[currentSessionId].calculateSize();
-            }
-        }, 100);
-    }
+    setTimeout(() => notifyTerminalViewportResize(), 100);
 });
