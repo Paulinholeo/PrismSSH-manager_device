@@ -4,7 +4,7 @@
 
 PrismSSH is a next-generation SSH client that combines terminal access, file management, and system monitoring in one elegant desktop application. Built with Python and modern web technologies, it offers a sleek alternative to traditional SSH clients.
 
-![PrismSSH Screenshot](https://github.com/user-attachments/assets/6b24a004-810e-4a2a-a0ed-d2b7347191b1)
+![PrismSSH — New Connection, Device Name, grupos BHTRANS/DER e bookmark com ícone ⚙](./docs/images/bookmarks-device-name-and-gear.png)
 
 ## ✨ Features
 
@@ -44,6 +44,13 @@ PrismSSH is a next-generation SSH client that combines terminal access, file man
 - Save and organize connection profiles
 - Quick-connect to frequently used servers
 - Automatic key management
+
+### 📑 **Bookmarks: Device Name, grupos e subgrupos**
+- Campos **Device Name** e **Group** no formulário **New Connection** etiquetam o perfil localmente (não mudam o handshake SSH).
+- Nos **Bookmarks**, cada grupo (ex.: `BHTRANS`) mostra os dispositivos com **Device Name** em destaque e `user@host:porta` por baixo; **ações** (Editar, Conectar, Renomear, mover de grupo, Excluir) ficam só no menu **⚙** ao lado do cartão.
+- Ao lado do nome de cada grupo há **+ Sub** (criar subgrupo), **Rename** e **Delete**. **+ Sub** abre uma caixa de texto para o nome do subgrupo dentro do grupo selecionado — o caminho hierárquico aparece nas ligações gravadas (ex.: `BHTRANS/Subpasta`).
+
+![Criar subgrupo — pedido de nome sob o grupo selecionado (ex.: BHTRANS)](./docs/images/subgroup-create-modal.png)
 
 ### 🎨 **Beautiful Interface**
 - Modern dark theme with glass-morphism effects
