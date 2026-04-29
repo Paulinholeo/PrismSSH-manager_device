@@ -2,7 +2,7 @@
 
 **A modern, all-in-one SSH client with beautiful UI and powerful features**
 
-PrismSSH is a next-generation SSH client that combines terminal access, file management, and system monitoring in one elegant desktop application. Built with Python and modern web technologies, it offers a sleek alternative to traditional SSH clients.
+PrismSSH is a next-generation SSH client that combines terminal access, file management, multi-session terminal layouts, and system monitoring in one elegant desktop application. Built with Python and modern web technologies, it offers a sleek alternative to traditional SSH clients.
 
 ![PrismSSH — interface atual com duas sessões SSH em split lado a lado](./docs/images/terminal-session-split-current.png)
 
@@ -12,16 +12,16 @@ PrismSSH is a next-generation SSH client that combines terminal access, file man
 ### 🖥️ **Modern Terminal Experience**
 - Multiple concurrent SSH sessions with tab management
 - Split terminal workspace between SSH sessions: single view, side-by-side, or stacked
-- Per-session panel titles, making it clear which terminal belongs to each host/device
+- Per-session panel titles to identify each connected host/device
 - Keyboard focus switching between visible terminals with **Alt+Tab** / **Alt+Shift+Tab**
 - Fallback focus switching with **Ctrl+PageDown** / **Ctrl+PageUp** when the OS captures Alt+Tab
-- Terminal maximize mode to hide sidebars and use the full application space
-- Automatic resize/reflow for all visible terminal panes after layout changes
+- Terminal maximize mode to hide sidebars and dedicate the window to terminal work
+- Automatic resize/reflow for every visible terminal pane after layout changes
 - Crystal-clear terminal with customizable themes
 - Real-time connection status monitoring
 - Automatic reconnection on connection loss
 - Smart logout detection (user commands + server disconnects)
-
+  
 ![PrismSSH terminal split — two active sessions side by side](./docs/images/terminal-session-split-current.png)
 
 
@@ -55,6 +55,8 @@ PrismSSH is a next-generation SSH client that combines terminal access, file man
 - Campos **Device Name** e **Group** no formulário **New Connection** etiquetam o perfil localmente (não mudam o handshake SSH).
 - Nos **Bookmarks**, cada grupo (ex.: `BHTRANS`) mostra os dispositivos com **Device Name** em destaque e `user@host:porta` por baixo; **ações** (Editar, Conectar, Renomear, mover de grupo, Excluir) ficam só no menu **⚙** ao lado do cartão.
 - Ao lado do nome de cada grupo há **+ Sub** (criar subgrupo), **Rename** e **Delete**. **+ Sub** abre uma caixa de texto para o nome do subgrupo dentro do grupo selecionado — o caminho hierárquico aparece nas ligações gravadas (ex.: `BHTRANS/Subpasta`).
+
+![PrismSSH — New Connection, Device Name, grupos BHTRANS/DER e bookmark com ícone ⚙](./docs/images/bookmarks-device-name-and-gear.png)
 
 ![Criar subgrupo — pedido de nome sob o grupo selecionado (ex.: BHTRANS)](./docs/images/subgroup-create-modal.png)
 
@@ -124,8 +126,8 @@ pip install webview paramiko cryptography
 - **Side by Side**: show active sessions as equal-width terminal panes.
 - **Stacked**: show active sessions as vertical panes.
 - **Maximize Terminal**: hide navigation/tools and dedicate the main window to terminal work.
-- **Smart Focus**: clicking a pane or cycling with shortcuts updates the active session used by SFTP, monitor and port-forward tools.
-- **Resize Safety**: every visible xterm pane is recalculated after split, maximize, sidebar or window-size changes.
+- **Smart Focus**: click a pane or cycle with shortcuts to update the active SSH session.
+- **Resize Safety**: every visible xterm pane recalculates after split, maximize, sidebar or window-size changes.
 
 ## 🔧 Configuration
 

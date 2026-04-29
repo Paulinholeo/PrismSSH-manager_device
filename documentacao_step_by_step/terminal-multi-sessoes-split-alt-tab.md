@@ -23,8 +23,6 @@
 | `src/ui/template.html` | `#sessionSplitToolbar` (botões 1 sessão / lado a lado / empilhado / maximizar); `#terminalWrapper` com classes raiz dos painéis de sessão. |
 | `src/ui/static/styles.css` | `.terminal-pane`, cabeçalho, layouts `terminal-session-layout-*`, painéis com `min-width: 0` / `min-height: 0` para ocupar a área disponível. |
 | `src/ui/static/app.js` | `createTerminalForSession` (DOM pane + ResizeObserver); `restartGlobalOutputPolling`; `cycleTerminalPaneFocus`; `installSessionPaneKeyboardCycle`; `initSessionViewLayout` + `notifyTerminalViewportResizeAll` no resize de janela e após ferramentas. |
-| `README.md` | Documenta split de sessões, títulos, atalhos, maximizar, resize e adiciona screenshot atual da interface. |
-| `docs/images/terminal-session-split-current.png` | Captura da interface atual com duas sessões SSH em split lado a lado. |
 
 ## Inicialização
 
@@ -42,3 +40,9 @@ O documento **workspace-terminal-max-split** agora descreve apenas o modo de max
 
 - Renumeração ou arrastar tabs para mudar ordem no ciclo Alt+Tab.
 - Lembrar qual painel tinha foco ao mudar entre `single` e split.
+
+## Atualização do README e imagem
+
+- O `README.md` passou a citar o layout de múltiplas sessões, títulos por painel, foco via Alt+Tab/Ctrl+PageDown e maximização do terminal.
+- A captura atual da interface foi adicionada em `docs/images/terminal-session-split-current.png`.
+- A imagem documenta o estado visual esperado: duas sessões SSH em modo lado a lado, cada uma em seu painel com título próprio.
